@@ -33,7 +33,7 @@ long dax_reset(const char * path, uint64_t dax_size){
 	if(dax_fd == -1){
 		return -1;
 	}
-	void * addr = mmap(NULL, MAP_SIZE ,PROT_WRITE | PROT_READ, MAP_SHARED ,dax_fd ,0);
+	void * addr = mmap(NULL, MAP_SIZE ,PROT_WRITE | PROT_READ, MAP_SHARED ,dax_fd ,0);	// 2TB
 	long ret = ioctl(dax_fd, DAX_IOCTL_RESET, (uint64_t)addr);
 	munmap(addr, MAP_SIZE);
 	// dax_init(dax_size);

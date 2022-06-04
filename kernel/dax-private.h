@@ -111,7 +111,7 @@ void dax_bus_exit(void);
 	};
 	typedef struct dax_runtime dax_runtime_t;
 
-	struct dax_master_page {
+	struct dax_master_page {	// master page struct
 		char magic_word[64];
 		unsigned long num_pages;
 		relptr_t bm_start_offset;
@@ -132,6 +132,7 @@ void dax_bus_exit(void);
 	};
 	typedef struct dax_master_page dax_master_page_t;
 
+	// this struct is the same as struct frame, ioctl pass ptr to frame as an argument
 	struct dax_ioctl_pswap {
 		unsigned long ufirst;
 		unsigned long usecond;

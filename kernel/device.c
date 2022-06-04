@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+//
 /* Copyright(c) 2016-2018 Intel Corporation. All rights reserved. */
 #include <linux/memremap.h>
 #include <linux/pagemap.h>
@@ -228,6 +229,7 @@ static dax_master_page_t * get_master_page(struct vm_area_struct *vma){
 	struct file *filp;
 	struct dev_dax *dev_dax;
 	phys_addr_t dax_start_addr;
+	// likely/unlikely is for optimization(branch prediction)
 	if(likely(vma == current_vma && vma->vm_start == current_start)){
 		return current_master;
 	}
@@ -241,8 +243,10 @@ static dax_master_page_t * get_master_page(struct vm_area_struct *vma){
 	if(unlikely(!filp)){
 		return NULL;
 	}
-	dev_dax = filp->private_data;
-	dax_start_addr = dax_pgoff_to_phys(dev_dax, 0, PMD_SIZE) + DAX_PSWAP_SHIFT;
+	dev_dax = filp->private_data;	// ???
+	dax_start_addr = dax_pgoff_to_phys(dev_dax, 0, PMD_SIZE) + DAX_PSWAP_SHIFT;	// DAX_P ... = 0x1 << 29
+	// __PAGE_OFFSET divides KVA and UVA space, e.g. x86_64 = 0xffff880000000000
+	// and starts from here 64TB is for direct mapping of all physical memory
 	current_master = (dax_master_page_t *) ((void *)dax_start_addr + __PAGE_OFFSET);
 	if(unlikely(MASTER_NOT_INIT(current_master))){
 		current_master = NULL;
@@ -257,6 +261,8 @@ static dax_master_page_t * get_master_page(struct vm_area_struct *vma){
 static dax_runtime_t * get_dax_runtime(dax_master_page_t * master_page){
 	if(unlikely(master_page != rt->master)){
 		rt->master = master_page;
+		// master_page is va, convert to pa, it seems that PM is directly mapped to start of kernel space
+		// Is this right ??? debug to see
 		rt->start_paddr = (phys_addr_t) ((void*)master_page - __PAGE_OFFSET);
 		rt->start = (void*)master_page;
 		rt->bitmap = rt->start + master_page-> bm_start_offset;
@@ -587,7 +593,7 @@ static void init_dax(dax_master_page_t * mast_page, unsigned long dax_size){
 	rt->master = mast_page;
 	rt->num_pages = mast_page->num_pages;
 	rt->start_paddr = (phys_addr_t) ((void*)mast_page - __PAGE_OFFSET);
-	rt->start = (void*)mast_page;
+	rt->start = (void*)mast_page;	// start va
 	rt->mpk[0] = mm_pkey_alloc(current->mm);
 	rt->mpk[1] = mm_pkey_alloc(current->mm);
 	rt->mpk[2] = mm_pkey_alloc(current->mm);
@@ -719,7 +725,8 @@ static int check_vma(struct dev_dax *dev_dax, struct vm_area_struct *vma,
 __weak phys_addr_t dax_pgoff_to_phys(struct dev_dax *dev_dax, pgoff_t pgoff,
 		unsigned long size)
 {
-	struct resource *res = &dev_dax->region->res;
+	// struct resource describes a device attched to bus(I think so)
+	struct resource *res = &dev_dax->region->res;	// res: physical addr range of the region
 	phys_addr_t phys;
 
 	phys = pgoff * PAGE_SIZE + res->start;
@@ -1175,17 +1182,18 @@ static const struct address_space_operations dev_dax_aops = {
 	.invalidatepage		= dax_invalidate_page,
 };
 
+// dax_open() function
 static int dax_open(struct inode *inode, struct file *filp)
 {
 	struct dax_device *dax_dev = inode_dax(inode);
 	struct inode *__dax_inode = dax_inode(dax_dev);
-	struct dev_dax *dev_dax = dax_get_private(dax_dev);
-
+	struct dev_dax *dev_dax = dax_get_private(dax_dev);	// in the driver code, dax_dev->private is equal to dev_dax
+								// (dax_dev is embedded in dev_dax)
 	dev_dbg(&dev_dax->dev, "trace\n");
-	inode->i_mapping = __dax_inode->i_mapping;
+	inode->i_mapping = __dax_inode->i_mapping;	// ???
 	inode->i_mapping->host = __dax_inode;
-	inode->i_mapping->a_ops = &dev_dax_aops;
-	filp->f_mapping = inode->i_mapping;
+	inode->i_mapping->a_ops = &dev_dax_aops;	// i_mapping->a_ops contains a pointer to struct address_space_operations.
+	filp->f_mapping = inode->i_mapping;		// struct address_space *f_mapping
 	filp->f_wb_err = filemap_sample_wb_err(filp->f_mapping);
 	filp->private_data = dev_dax;
 	inode->i_flags = S_DAX;
@@ -1213,7 +1221,8 @@ static int dax_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static const struct file_operations dax_fops = {
+// device's open() function and so on
+static const struct file_operations dax_fops = {	// important operations
 	.llseek = noop_llseek,
 	.owner = THIS_MODULE,
 	.open = dax_open,
@@ -1236,38 +1245,39 @@ static void dev_dax_kill(void *dev_dax)
 	kill_dev_dax(dev_dax);
 }
 
+// dax_init -> device_dax_driver.drv.probe( .probe = dev_dax_probe )
 int dev_dax_probe(struct device *dev)
 {
-	struct dev_dax *dev_dax = to_dev_dax(dev);
-	struct dax_device *dax_dev = dev_dax->dax_dev;
-	struct resource *res = &dev_dax->region->res;
-	struct inode *inode;
-	struct cdev *cdev;
+	struct dev_dax *dev_dax = to_dev_dax(dev);	// device is embedded in dev_dax, use container_of
+	struct dax_device *dax_dev = dev_dax->dax_dev;	// core functionalities of dev_dax
+	struct resource *res = &dev_dax->region->res;	// res records physical address (I think so)
+	struct inode *inode;	// part of dax_dev
+	struct cdev *cdev;	// part of dax_dev
 	void *addr;
 	int rc;
 
 	/* 1:1 map region resource range to device-dax instance range */
 	if (!devm_request_mem_region(dev, res->start, resource_size(res),
-				dev_name(dev))) {
+				dev_name(dev))) {	// basically reserves space
 		dev_warn(dev, "could not reserve region %pR\n", res);
 		return -EBUSY;
 	}
 
-	dev_dax->pgmap.type = MEMORY_DEVICE_DEVDAX;
-	addr = devm_memremap_pages(dev, &dev_dax->pgmap);
+	dev_dax->pgmap.type = MEMORY_DEVICE_DEVDAX;	// it seems that this has been renamed to MEMORY_DEVICE_GENERIC
+	addr = devm_memremap_pages(dev, &dev_dax->pgmap);	// VERY IMPORTANT
 	if (IS_ERR(addr))
 		return PTR_ERR(addr);
 
 	inode = dax_inode(dax_dev);
 	cdev = inode->i_cdev;
-	cdev_init(cdev, &dax_fops);
+	cdev_init(cdev, &dax_fops);	// VERY IMPORTANT initialize cdev and associate it with dax_fops
 	if (dev->class) {
 		/* for the CONFIG_DEV_DAX_PMEM_COMPAT case */
 		cdev->owner = dev->parent->driver->owner;
 	} else
 		cdev->owner = dev->driver->owner;
-	cdev_set_parent(cdev, &dev->kobj);
-	rc = cdev_add(cdev, dev->devt, 1);
+	cdev_set_parent(cdev, &dev->kobj);	// struct kobject is like abstract class
+	rc = cdev_add(cdev, dev->devt, 1);	// add cdev to system
 	if (rc)
 		return rc;
 
@@ -1336,19 +1346,19 @@ static int dax_pswap(unsigned long ufirst, unsigned long usecond, unsigned long 
 
 	mm = current->mm;
 	
-	vma = find_vma(current->mm, ufirst);
+	vma = find_vma(current->mm, ufirst);	// find the mapping of PM
 #if PSWAP_DEBUG > 1
 		printk("PSWAP: PID: %d  %#lx <-> %#lx  npgs: %lu\n",
 			current->pid , ufirst, usecond, npgs);
 #endif
 	mutex_lock(&dax_lock);
-	if(rt->vaddr_base != vma->vm_start){
+	if(rt->vaddr_base != vma->vm_start){	// rt->vaddr_base is the starting va of PM
 	
 		if(!vma){
 			mutex_unlock(&dax_lock);
 			return -1;
 		}
-		master_page = get_master_page(vma);
+		master_page = get_master_page(vma);	// see line 227
 		if(unlikely(!master_page)){
 			printk("DAX pswap: Error: User addr invalid, not in DAX\n");
 			goto err_out;
@@ -1363,7 +1373,7 @@ static int dax_pswap(unsigned long ufirst, unsigned long usecond, unsigned long 
 	else{
 		master_page = rt->master;
 	}
-
+	// PMD_SIZE = 0x1<<21, 2MB
 	if((ufirst & (PMD_SIZE - 1)) == (usecond & (PMD_SIZE - 1)) ){
 		aligned = 1;
 	}
@@ -1371,7 +1381,7 @@ static int dax_pswap(unsigned long ufirst, unsigned long usecond, unsigned long 
 		aligned = 0;
 	}
 
-	if(unlikely(!aligned && npgs > 64)){
+	if(unlikely(!aligned && npgs > 64)){	// if (unlikely(val) / likely(val)) <=> if (val)
 		printk("DAX pswap: Error: unsupported param. ufrist: %#lx, usecond: %#lx, npgs: %ld\n", 
 		ufirst, usecond, npgs);
 		goto err_out;
@@ -1384,11 +1394,11 @@ static int dax_pswap(unsigned long ufirst, unsigned long usecond, unsigned long 
 #if PSWAP_DEBUG > 1
 	printk("DAX pswap: start step 1\n");
 #endif
-	first = ufirst - rt->vaddr_base;
-	second = usecond - rt->vaddr_base;
+	first = ufirst - rt->vaddr_base;	// ufirst - vma -> vm_start, offset ??
+	second = usecond - rt->vaddr_base;	// ??
 	
 #if PSWAP_DEBUG > 1
-	if(aligned){
+	if(aligned){	// print pmd / pte info to debug
 		relptr_t * pmdp;
 		unsigned long pmd_off, pte_off;
 		pmd_off =  (first & PMD_MASK) >> PMD_SHIFT;
@@ -3060,8 +3070,8 @@ long dax_handle_reset(struct file * filp){
 	dax_master_page_t * m_page_p;
 	printk("DAX RESET: Start!");
 	dev_dax = filp->private_data;
-	dax_start_addr = dax_pgoff_to_phys(dev_dax, 0, PMD_SIZE)+ DAX_PSWAP_SHIFT;
-	m_page_p = (void *)dax_start_addr + __PAGE_OFFSET;
+	dax_start_addr = dax_pgoff_to_phys(dev_dax, 0, PMD_SIZE)+ DAX_PSWAP_SHIFT; // what's DAX... (0x1<<29) why?
+	m_page_p = (void *)dax_start_addr + __PAGE_OFFSET;	// __PAGE_OFFSET separates usr & kernel space
 	if(MASTER_NOT_INIT(m_page_p)){
 		return EINVAL;
 	}

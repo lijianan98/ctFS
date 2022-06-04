@@ -28,7 +28,7 @@ static inline void *intel_memcpy(void * __restrict__ b, const void * __restrict_
 
 int ctfs_mkfs(int flag){
 #ifdef TEST_DRAM
-	ct_rt.base_addr = (uint64_t)malloc(CT_DAX_ALLOC_SIZE);
+	ct_rt.base_addr = (uint64_t)malloc(CT_DAX_ALLOC_SIZE);	// CT_DAX_ALLOC_SIZE = 2TB
 #else
 	if(flag & CTFS_MKFS_FLAG_RESET_DAX){
 		printf("ctFS_mkfs: reseting dax...\n");
@@ -92,7 +92,7 @@ int ctfs_mkfs(int flag){
 int ctfs_init(int flag){
 	memset(&ct_rt, 0, sizeof(ct_rt));
 	dax_ioctl_init_t frame = {.size = CT_DAX_ALLOC_SIZE};
-	ct_rt.base_addr = (uint64_t)dax_start("/dev/dax0.0", &frame);
+	ct_rt.base_addr = (uint64_t)dax_start("/dev/dax0.0", &frame);	// similar to as reset
 	ct_rt.super_blk = (ct_super_blk_pt)(ct_rt.base_addr);
 	ct_rt.mpk[DAX_MPK_DEFAULT] = frame.mpk_default;
 	ct_rt.mpk[DAX_MPK_FILE] = frame.mpk_file;
